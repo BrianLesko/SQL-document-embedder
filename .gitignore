@@ -2,3 +2,4 @@ my_env
 .gitattributes
 __pycache__
 documents
+models

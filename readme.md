@@ -1,11 +1,7 @@
 
 # Document Chunking
 
-This code takes long text as an input and chunks the text into smaller groups. 
-
-Chunks are split at sentance boundaries after a minimum number of "tokens" has been reached, also each chunk has one overlapping sentance with its neighbors by default. 
-
-This chunking schema is useful for text similarity search and natural language processing tasks such as NVIDIA's chat with RTX. 
+This code takes document chunks and embedds them into a vector space representing the content contained within the chunk. Useful for NPL and text based AI systems.
 
 &nbsp;
 

@@ -5,14 +5,15 @@ import streamlit as st
 from SQLConnect import SQLConnectDocker as SQLConnect
 from customize_gui import gui as gui 
 gui = gui()
-import os
 import time
-import chunk_documents
 import pandas as pd
+from ollama import Client
+import ollama
+import ollamaInterface
 
 def main(): 
-    gui.setup(wide=True, text="Chunk Documents")
-    st.title('Chunk Documents')
+    gui.setup(wide=True, text="Embed Document Chunks")
+    st.title('Embed Documents')
     current_task = st.empty()
 
     # Keep the connection to the SQL container accross reruns
@@ -22,21 +23,20 @@ def main():
     if "sql" in st.session_state:
         sql = st.session_state.sql
 
+    # Keep the connection to the LLM accross reruns
+    if "client" not in st.session_state:
+        st.session_state.my_ollama = ollamaInterface.ollamaInterface()
+        message = st.session_state.my_ollama.start_container()
+        st.write(message)
+        st.session_state.client = Client(host='http://localhost:11434')
+        st.session_state.my_ollama.start()
+
     with st.sidebar:
         result = sql.get_tables()
         Tables = st.empty()
         with Tables: st.table(result)
         "---"
-        st.write('Docker installed:', sql.docker_version)
-        st.write('Docker running:', sql.docker_is_running)
-        if not sql.docker_is_running: 
-            st.write("Docker is not running")
-        st.write('Container running:', sql.container_is_running)
 
-        if st.button("Restart the MySQL Container"):
-            sql.stop_container()
-            sql.start_container()
-    
     # Prep
     sql.query("USE user")
     names = sql.query("SELECT name FROM summary;")
@@ -52,32 +52,47 @@ def main():
     num_chunks = sql.query("SELECT COUNT(*) FROM chunks;")
     st.write(f"{num_chunks[0]['COUNT(*)']} Document chunks in the database.")
 
-    if st.button("Clear the document chunks?"):
-        sql.query("DELETE FROM chunks;")
-        sql.connection.commit()
-        st.write("Document chunks cleared.")
+    # Is the embeddings table up to date?
+    num_embeddings = sql.query("SELECT COUNT(*) FROM embeddings;")
+    st.write(f"{num_embeddings[0]['COUNT(*)']} Embeddings in the database.")
+    if num_embeddings[0]['COUNT(*)'] == num_chunks[0]['COUNT(*)']:
+        st.write("The embeddings table is up to date.")
+    else:
+        st.write("The embeddings table is not up to date. Please run the 'Embed Documents' script.")
 
-    if not st.button("Chunk each document?"):
+    if st.button("Clear the embeddings"):
+        sql.query("DELETE FROM embeddings;")
+        sql.connection.commit()
+        st.write("Document embeddings cleared.")
+
+    if st.button("Example Embedding"):
+        with st.spinner("Embedding..."):
+            start_time = time.time()  # start timing
+            embedding = ollama.embeddings(model='mistral', prompt='The sky is blue and there are 20 trees ')
+            end_time = time.time()  # end timing
+            elapsed_time = end_time - start_time  # calculate elapsed time
+            st.write(f"Time taken: {elapsed_time} seconds")  # print elapsed time
+            st.write(embedding)
+
+    if not st.button("Embed each chunk?"):
         st.stop()
 
-    for name in unique_names:
-        st.caption(name)
-        try:
-            document = sql.query(f"SELECT content FROM content WHERE name = '{name}'")[0]['content']
-            st.write(f"There are this many characters in the document: {len(document)}")
-            tokens = chunk_documents.tokenizer.tokenize(document)
-            st.write(f"There are this many tokens in the document: {len(tokens)}")
+    chunks = sql.query("SELECT * FROM chunks;")
+    chunks_df = pd.DataFrame(chunks)
+    st.dataframe(chunks_df)
+    for index, chunk in chunks_df.iterrows():
+        content = chunk['content']
+        with st.spinner("Embedding..."):
+            start_time = time.time()
+            embedding = st.session_state.client.embeddings(model='mistral', prompt=content)
+            embedding_str = ', '.join(map(str, embedding['embedding']))  # convert numpy array or list to string
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+        # the SQL database needs source, chunk_id, and embedding
+        st.write(f"Chunk {chunk['chunk_number']} embedded from {chunk['source']} in {elapsed_time} seconds")
+        sql.cursor.execute(f"INSERT INTO embeddings (source, chunk_number, embedding) VALUES ('{chunk['source']}', '{chunk['chunk_number']}', '{embedding_str}');")
+        sql.connection.commit()
+        st.write("Embedded.")
 
-            with st.spinner("Chunking the document..."):
-                chunks = chunk_documents.chunk_document(tokens, min_chunk_size=300, max_chunk_size=800)
-                #st.write(f"There are this many chunks in the document: {len(chunks)}")
-
-            # Write to a new row
-            for i, chunk in enumerate(chunks):
-                sql.cursor.execute("INSERT INTO chunks (source, chunk_number, content) VALUES (%s, %s, %s);", (name, i, chunk))
-            st.write(f"{i+1} Chunks have been added to the database.")
-            sql.connection.commit()
-        except:
-            st.write(f"{name} does not exist")
-        
 main()
